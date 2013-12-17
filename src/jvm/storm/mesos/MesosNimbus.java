@@ -439,6 +439,8 @@ public class MesosNimbus implements INimbus {
 									.setRole(portsRole))
                             .build();
                         toLaunch.get(id).add(task);
+
+                        _offers.remove(id);
                     }
                 }
             }
@@ -447,8 +449,6 @@ public class MesosNimbus implements INimbus {
 
                 LOG.info("Launching tasks for offer " + id.getValue() + "\n" + tasks.toString());
                 _driver.launchTasks(id, tasks);
-
-                _offers.remove(id);
             }
         }
     }
