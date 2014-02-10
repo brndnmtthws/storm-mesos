@@ -280,7 +280,7 @@ public class MesosNimbus implements INimbus {
         int availableSlots = Math.min(resources.cpuSlots, resources.memSlots);
         availableSlots = Math.min(availableSlots, resources.ports.size());
         for(int i=0; i<availableSlots; i++) {
-            ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(i)));
+            ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(0)));
         }
         return ret;
     }
@@ -442,8 +442,6 @@ public class MesosNimbus implements INimbus {
                                     .setRole(portsRole))
                             .build();
                         toLaunch.get(id).add(task);
-
-                        _offers.remove(id);
                     }
                 }
             }
@@ -452,6 +450,7 @@ public class MesosNimbus implements INimbus {
 
                 LOG.info("Launching tasks for offer " + id.getValue() + "\n" + tasks.toString());
                 _driver.launchTasks(id, tasks);
+                _offers.remove(id);
             }
         }
     }
