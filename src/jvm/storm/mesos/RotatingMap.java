@@ -97,6 +97,17 @@ public class RotatingMap<K, V> {
         return ret;
     }
 
+    public Collection<V> newestValues() {
+        Iterator<HashMap<K, V>> it = _buckets.descendingIterator();
+        List<V> ret = new ArrayList<V>();
+        HashMap<K, V> bucket = it.next();
+        while(it.hasNext()) {
+            bucket = it.next();
+            ret.addAll(bucket.values());
+        }
+        return ret;
+    }
+
     public Object remove(K key) {
         for(HashMap<K, V> bucket: _buckets) {
             if(bucket.containsKey(key)) {

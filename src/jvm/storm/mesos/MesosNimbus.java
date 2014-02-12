@@ -273,7 +273,7 @@ public class MesosNimbus implements INimbus {
         return resources;
     }
 
-    private List<WorkerSlot> toSlots(Offer offer, double cpu, double mem, Set<String> existingWorkers) {
+    private List<WorkerSlot> toSlots(Offer offer, double cpu, double mem, final Set<String> existingWorkers) {
         OfferResources resources = getResources(offer, cpu, mem);
 
         List<WorkerSlot> ret = new ArrayList<WorkerSlot>();
@@ -339,7 +339,7 @@ public class MesosNimbus implements INimbus {
 
         if(cpu!=null && mem!=null) {
             synchronized(OFFERS_LOCK) {
-                for(Offer offer: _offers.values()) {
+                for(Offer offer: _offers.newestValues()) {
                     allSlots.addAll(toSlots(offer, cpu, mem, existingWorkers));
                 }
             }
