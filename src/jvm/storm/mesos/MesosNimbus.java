@@ -273,14 +273,16 @@ public class MesosNimbus implements INimbus {
         return resources;
     }
 
-    private List<WorkerSlot> toSlots(Offer offer, double cpu, double mem) {
+    private List<WorkerSlot> toSlots(Offer offer, double cpu, double mem, Set<String> existingWorkers) {
         OfferResources resources = getResources(offer, cpu, mem);
 
         List<WorkerSlot> ret = new ArrayList<WorkerSlot>();
         int availableSlots = Math.min(resources.cpuSlots, resources.memSlots);
         availableSlots = Math.min(availableSlots, resources.ports.size());
         for(int i=0; i<availableSlots; i++) {
-            ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(0)));
+            if (!existingWorkers.contains(offer.getHostname() + "-" + resources.ports.get(0))) {
+                ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(0)));
+            }
         }
         return ret;
     }
@@ -326,11 +328,19 @@ public class MesosNimbus implements INimbus {
         // need access to how many slots are currently used to limit number of slots taken up
 
         List<WorkerSlot> allSlots = new ArrayList();
+        Set<String> existingWorkers = new HashSet<String>();
+        for (SupervisorDetails supervisor : existingSupervisors) {
+            final String host = supervisor.getHost();
+            for (Integer port : supervisor.getAllPorts()) {
+                existingWorkers.add(host + "-" + port);
+            }
+        }
+
 
         if(cpu!=null && mem!=null) {
             synchronized(OFFERS_LOCK) {
                 for(Offer offer: _offers.values()) {
-                    allSlots.addAll(toSlots(offer, cpu, mem));
+                    allSlots.addAll(toSlots(offer, cpu, mem, existingWorkers));
                 }
             }
         }
