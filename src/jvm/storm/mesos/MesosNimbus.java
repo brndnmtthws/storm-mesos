@@ -105,7 +105,7 @@ public class MesosNimbus implements INimbus {
                         Runtime.getRuntime().halt(2);
                     }
                 }
-            }, 0, 1500 * offerExpired.intValue());
+            }, 0, 2000 * offerExpired.intValue());
             _initter.release();
         }
 
