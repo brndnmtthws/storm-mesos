@@ -52,6 +52,16 @@ public class MesosNimbus implements INimbus {
     private final Object OFFERS_LOCK = new Object();
     private RotatingMap<OfferID, Offer> _offers;
 
+    private final int LRU_MAX_ENTRIES = 10000;
+    private Map<TaskID, Offer> used_offers = Collections.synchronizedMap(new LinkedHashMap(LRU_MAX_ENTRIES+1, .75F, true) {
+      // This method is called just after a new entry has been added
+      public boolean removeEldestEntry(Map.Entry eldest) {
+        return size() > LRU_MAX_ENTRIES;
+      }
+    });
+    private Map<ExecutorID, List<TaskID>> executors = Collections.synchronizedMap(new HashMap<ExecutorID, List<TaskID>>());
+
+
     LocalState _state;
     NimbusScheduler _scheduler;
     volatile SchedulerDriver _driver;
@@ -160,6 +170,10 @@ public class MesosNimbus implements INimbus {
 
         @Override
         public void executorLost(SchedulerDriver driver, ExecutorID executor, SlaveID slave, int status) {
+          LOG.info("Executor lost: executor=" + executor + " slave=" + slave);
+          if (executors.containsKey(executor)) {
+            used_offers.keySet().removeAll(executors.get(executor));
+          }
         }
     }
 
@@ -280,7 +294,7 @@ public class MesosNimbus implements INimbus {
         int availableSlots = Math.min(resources.cpuSlots, resources.memSlots);
         availableSlots = Math.min(availableSlots, resources.ports.size());
         for(int i=0; i<availableSlots; i++) {
-            if (!existingWorkers.contains(offer.getHostname() + "-" + resources.ports.get(0))) {
+            if (!existingWorkers.contains(MesosCommon.taskId(offer.getHostname(), resources.ports.get(0)))) {
                 ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(0)));
             }
         }
@@ -332,7 +346,7 @@ public class MesosNimbus implements INimbus {
         for (SupervisorDetails supervisor : existingSupervisors) {
             final String host = supervisor.getHost();
             for (Integer port : supervisor.getAllPorts()) {
-                existingWorkers.add(host + "-" + port);
+                existingWorkers.add(MesosCommon.taskId(host, port));
             }
         }
 
@@ -376,93 +390,107 @@ public class MesosNimbus implements INimbus {
                 }
             }
         }
+        // Still haven't found the slot? Maybe it's an offer we already used.
         return null;
     }
 
     @Override
     public void assignSlots(Topologies topologies, Map<String, Collection<WorkerSlot>> slots) {
-        synchronized(OFFERS_LOCK) {
-            Map<OfferID, List<TaskInfo>> toLaunch = new HashMap();
-            for(String topologyId: slots.keySet()) {
-                for(WorkerSlot slot: slots.get(topologyId)) {
-                    OfferID id = findOffer(slot);
-                    Offer offer = _offers.get(id);
-                    if (id != null) {
-                        if (!toLaunch.containsKey(id)) {
-                            toLaunch.put(id, new ArrayList());
-                        }
-                        TopologyDetails details = topologies.getById(topologyId);
-                        double cpu = MesosCommon.topologyCpu(_conf, details);
-                        double mem = MesosCommon.topologyMem(_conf, details);
+      synchronized(OFFERS_LOCK) {
+        Map<OfferID, List<TaskInfo>> toLaunch = new HashMap();
+        for(String topologyId: slots.keySet()) {
+          for(WorkerSlot slot: slots.get(topologyId)) {
+            OfferID id = null;
+            Offer offer = null;
+            if (used_offers.containsKey(MesosCommon.taskId(slot.getNodeId(), slot.getPort()))) {
+              offer = used_offers.get(MesosCommon.taskId(slot.getNodeId(), slot.getPort()));
+              id = offer.getId();
+            } else {
+              id = findOffer(slot);
+              offer = _offers.get(id);
+            }
+            if (id != null) {
+              if (!toLaunch.containsKey(id)) {
+                toLaunch.put(id, new ArrayList());
+              }
+              TopologyDetails details = topologies.getById(topologyId);
+              double cpu = MesosCommon.topologyCpu(_conf, details);
+              double mem = MesosCommon.topologyMem(_conf, details);
 
-                        Map executorData = new HashMap();
-                        executorData.put(MesosCommon.SUPERVISOR_ID, slot.getNodeId() + "-" + details.getId());
-                        executorData.put(MesosCommon.ASSIGNMENT_ID, slot.getNodeId());
+              Map executorData = new HashMap();
+              executorData.put(MesosCommon.SUPERVISOR_ID, slot.getNodeId() + "-" + details.getId());
+              executorData.put(MesosCommon.ASSIGNMENT_ID, slot.getNodeId());
 
-                        // Determine roles for cpu, mem, ports
-                        String cpuRole = new String("*");
-                        String memRole = cpuRole;
-                        String portsRole = cpuRole;
-                        for (Resource r: offer.getResourcesList()) {
-                            if (r.getName().equals("cpus") && r.getScalar().getValue() >= cpu) {
-                                cpuRole = r.getRole();
-                            } else if(r.getName().equals("mem") && r.getScalar().getValue() >= mem) {
-                                memRole = r.getRole();
-                            } else if(r.getName().equals("ports") && r.getScalar().getValue() >= mem) {
-                                for(Range range: r.getRanges().getRangeList()) {
-                                    if(slot.getPort() >= range.getBegin() && slot.getPort() <= range.getEnd()) {
-                                        portsRole = r.getRole();
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        String executorDataStr = JSONValue.toJSONString(executorData);
-                        LOG.info("Launching task with executor data: <" + executorDataStr + ">");
-                        TaskInfo task = TaskInfo.newBuilder()
-                            .setName("worker " + slot.getNodeId() + ":" + slot.getPort())
-                            .setTaskId(TaskID.newBuilder()
-                                    .setValue(MesosCommon.taskId(slot.getNodeId(), slot.getPort())))
-                            .setSlaveId(offer.getSlaveId())
-                            .setExecutor(ExecutorInfo.newBuilder()
-                                    .setExecutorId(ExecutorID.newBuilder().setValue(details.getId()))
-                                    .setData(ByteString.copyFromUtf8(executorDataStr))
-                                    .setCommand(CommandInfo.newBuilder()
-                                        .addUris(URI.newBuilder().setValue((String) _conf.get(CONF_EXECUTOR_URI)))
-                                        .setValue("cd storm-mesos* && python bin/storm supervisor storm.mesos.MesosSupervisor")
-                                        ))
-                            .addResources(Resource.newBuilder()
-                                    .setName("cpus")
-                                    .setType(Type.SCALAR)
-                                    .setScalar(Scalar.newBuilder().setValue(cpu))
-                                    .setRole(cpuRole))
-                            .addResources(Resource.newBuilder()
-                                    .setName("mem")
-                                    .setType(Type.SCALAR)
-                                    .setScalar(Scalar.newBuilder().setValue(mem))
-                                    .setRole(memRole))
-                            .addResources(Resource.newBuilder()
-                                    .setName("ports")
-                                    .setType(Type.RANGES)
-                                    .setRanges(Ranges.newBuilder()
-                                        .addRange(Range.newBuilder()
-                                            .setBegin(slot.getPort())
-                                            .setEnd(slot.getPort())))
-                                    .setRole(portsRole))
-                            .build();
-                        toLaunch.get(id).add(task);
+              // Determine roles for cpu, mem, ports
+              String cpuRole = new String("*");
+              String memRole = cpuRole;
+              String portsRole = cpuRole;
+              for (Resource r: offer.getResourcesList()) {
+                if (r.getName().equals("cpus") && r.getScalar().getValue() >= cpu) {
+                  cpuRole = r.getRole();
+                } else if(r.getName().equals("mem") && r.getScalar().getValue() >= mem) {
+                  memRole = r.getRole();
+                } else if(r.getName().equals("ports") && r.getScalar().getValue() >= mem) {
+                  for(Range range: r.getRanges().getRangeList()) {
+                    if(slot.getPort() >= range.getBegin() && slot.getPort() <= range.getEnd()) {
+                      portsRole = r.getRole();
+                      break;
                     }
+                  }
                 }
-            }
-            for(OfferID id: toLaunch.keySet()) {
-                List<TaskInfo> tasks = toLaunch.get(id);
+              }
 
-                LOG.info("Launching tasks for offer " + id.getValue() + "\n" + tasks.toString());
-                _driver.launchTasks(id, tasks);
-                _offers.remove(id);
+              String executorDataStr = JSONValue.toJSONString(executorData);
+              LOG.info("Launching task with executor data: <" + executorDataStr + ">");
+              TaskInfo task = TaskInfo.newBuilder()
+                .setName("worker " + slot.getNodeId() + ":" + slot.getPort())
+                .setTaskId(TaskID.newBuilder()
+                    .setValue(MesosCommon.taskId(slot.getNodeId(), slot.getPort())))
+                .setSlaveId(offer.getSlaveId())
+                .setExecutor(ExecutorInfo.newBuilder()
+                    .setExecutorId(ExecutorID.newBuilder().setValue(details.getId()))
+                    .setData(ByteString.copyFromUtf8(executorDataStr))
+                    .setCommand(CommandInfo.newBuilder()
+                      .addUris(URI.newBuilder().setValue((String) _conf.get(CONF_EXECUTOR_URI)))
+                      .setValue("cd storm-mesos* && python bin/storm supervisor storm.mesos.MesosSupervisor")
+                      ))
+                .addResources(Resource.newBuilder()
+                    .setName("cpus")
+                    .setType(Type.SCALAR)
+                    .setScalar(Scalar.newBuilder().setValue(cpu))
+                    .setRole(cpuRole))
+                .addResources(Resource.newBuilder()
+                    .setName("mem")
+                    .setType(Type.SCALAR)
+                    .setScalar(Scalar.newBuilder().setValue(mem))
+                    .setRole(memRole))
+                .addResources(Resource.newBuilder()
+                    .setName("ports")
+                    .setType(Type.RANGES)
+                    .setRanges(Ranges.newBuilder()
+                      .addRange(Range.newBuilder()
+                        .setBegin(slot.getPort())
+                        .setEnd(slot.getPort())))
+                    .setRole(portsRole))
+                .build();
+              toLaunch.get(id).add(task);
             }
+          }
         }
+        for(OfferID id: toLaunch.keySet()) {
+          List<TaskInfo> tasks = toLaunch.get(id);
+
+          LOG.info("Launching tasks for offer " + id.getValue() + "\n" + tasks.toString());
+          _driver.launchTasks(id, tasks);
+          List<TaskID> taskIds = new ArrayList<>();
+          for (TaskInfo task : tasks) {
+            used_offers.put(task.getTaskId(), _offers.get(id));
+            taskIds.add(task.getTaskId());
+          }
+          executors.put(tasks.get(0).getExecutor().getExecutorId(), taskIds);
+          _offers.remove(id);
+        }
+      }
     }
 
     public static void main(String[] args) {
