@@ -72,8 +72,8 @@ public class MesosNimbus implements INimbus {
         LOG.error("Halting process...", e);
         Runtime.getRuntime().halt(1);
       }
-      _offers = new storm.mesos.RotatingMap<OfferID, Offer>(
-          new storm.mesos.RotatingMap.ExpiredCallback<OfferID, Offer>() {
+      _offers = new RotatingMap<OfferID, Offer>(
+          new RotatingMap.ExpiredCallback<OfferID, Offer>() {
         @Override
         public void expire(OfferID key, Offer val) {
             driver.declineOffer(val.getId());
@@ -374,10 +374,19 @@ public class MesosNimbus implements INimbus {
     return null;
   }
 
+  private class LaunchTask {
+    public LaunchTask(final TaskInfo task, final Offer offer) {
+      this.task = task;
+      this.offer = offer;
+    }
+    public final TaskInfo task;
+    public final Offer offer;
+  }
+
   @Override
   public void assignSlots(Topologies topologies, Map<String, Collection<WorkerSlot>> slots) {
     synchronized (OFFERS_LOCK) {
-      Map<OfferID, List<TaskInfo>> toLaunch = new HashMap();
+      Map<OfferID, List<LaunchTask>> toLaunch = new HashMap();
       for (String topologyId : slots.keySet()) {
         for (WorkerSlot slot : slots.get(topologyId)) {
           OfferID id = findOffer(slot);
@@ -399,23 +408,59 @@ public class MesosNimbus implements INimbus {
             executorData.put(MesosCommon.ASSIGNMENT_ID, slot.getNodeId());
 
             // Determine roles for cpu, mem, ports
-            String cpuRole = new String("*");
-            String memRole = cpuRole;
-            String portsRole = cpuRole;
+            String cpuRole = null;
+            String memRole = null;
+            String portsRole = null;
+
+            // Subtract these used resources from our offer and store it in the used_offers map.
+            Offer.Builder builder = Offer.newBuilder();
+            builder.mergeFrom(offer);
+            builder.clearResources();
+
+            List<Resource> resourceList = new ArrayList<>();
             for (Resource r : offer.getResourcesList()) {
-              if (r.getName().equals("cpus") && r.getScalar().getValue() >= cpu) {
+              if (r.getName().equals("cpus") && r.getScalar().getValue() >= cpu && cpuRole == null) {
                 cpuRole = r.getRole();
-              } else if (r.getName().equals("mem") && r.getScalar().getValue() >= mem) {
+                Resource.Builder resource = Resource.newBuilder();
+                resource.mergeFrom(r);
+                resource.setScalar(
+                    Scalar.newBuilder()
+                        .setValue(cpu));
+                resourceList.add(resource.build());
+              } else if (r.getName().equals("mem") && r.getScalar().getValue() >= mem && memRole == null) {
                 memRole = r.getRole();
-              } else if (r.getName().equals("ports") && r.getScalar().getValue() >= mem) {
+                Resource.Builder resource = Resource.newBuilder();
+                resource.mergeFrom(r);
+                resource.setScalar(
+                    Scalar.newBuilder()
+                        .setValue(mem));
+                resourceList.add(resource.build());
+              } else if (r.getName().equals("ports") && portsRole == null) {
                 for (Range range : r.getRanges().getRangeList()) {
+                  Range.Builder rb = Range.newBuilder().mergeFrom(range);
                   if (slot.getPort() >= range.getBegin() && slot.getPort() <= range.getEnd()) {
                     portsRole = r.getRole();
+                    Resource.Builder resource = Resource.newBuilder();
+                    resource.mergeFrom(r);
+                    resource.setRanges(
+                        Ranges.newBuilder()
+                            .addRange(
+                                Range.newBuilder()
+                                    .setBegin(slot.getPort())
+                                    .setEnd(slot.getPort())
+                            ));
+                    resourceList.add(resource.build());
                     break;
                   }
                 }
               }
             }
+            builder.addAllResources(resourceList);
+            Offer newOffer = builder.build();
+
+            if (cpuRole == null) cpuRole = "*";
+            if (memRole == null) memRole = "*";
+            if (portsRole == null) portsRole = "*";
 
             String executorDataStr = JSONValue.toJSONString(executorData);
             LOG.info("Launching task with executor data: <" + executorDataStr + ">");
@@ -450,20 +495,20 @@ public class MesosNimbus implements INimbus {
                             .setEnd(slot.getPort())))
                     .setRole(portsRole))
                 .build();
-            toLaunch.get(id).add(task);
+            toLaunch.get(id).add(new LaunchTask(task, newOffer));
           }
         }
       }
       for (OfferID id : toLaunch.keySet()) {
-        List<TaskInfo> tasks = toLaunch.get(id);
+        List<LaunchTask> tasks = toLaunch.get(id);
 
         LOG.info("Launching tasks for offer " + id.getValue() + "\n" + tasks.toString());
-        _driver.launchTasks(id, tasks);
-        List<TaskID> taskIds = new ArrayList<>();
-        for (TaskInfo task : tasks) {
-          used_offers.put(task.getTaskId(), _offers.get(id));
-          taskIds.add(task.getTaskId());
+        List<TaskInfo> launchList = new ArrayList<>();
+        for (LaunchTask t : tasks) {
+          launchList.add(t.task);
+          used_offers.put(t.task.getTaskId(), t.offer);
         }
+        _driver.launchTasks(id, launchList);
         _offers.remove(id);
       }
     }

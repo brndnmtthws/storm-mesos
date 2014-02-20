@@ -1,7 +1,7 @@
 (defproject storm/storm-mesos "airbnb"
   :description "Storm integration with the Mesos cluster manager"
   :source-paths ["src/clj"]
-  :java-source-paths ["src/jvm"]
+  :java-source-paths ["src"]
   :javac-options ["-g"]
   :jvm-opts ["-Djava.library.path=/usr/local/lib:/opt/local/lib:/usr/lib"]
   :repositories {"mesosphere-public-repo" "http://s3.amazonaws.com/mesosphere-maven-public"}
