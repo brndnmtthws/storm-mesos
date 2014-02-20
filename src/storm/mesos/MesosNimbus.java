@@ -297,7 +297,7 @@ public class MesosNimbus implements INimbus {
       final TaskID taskId = TaskID.newBuilder()
         .setValue(MesosCommon.taskId(offer.getHostname(), resources.ports.get(i)))
         .build();
-      used_offers.remove(MesosCommon.taskId(offer.getHostname(), resources.ports.get(i)));
+      used_offers.remove(taskId);
       ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(i)));
     }
     return ret;
@@ -391,8 +391,13 @@ public class MesosNimbus implements INimbus {
         for (WorkerSlot slot : slots.get(topologyId)) {
           OfferID id = findOffer(slot);
           Offer offer = _offers.get(id);
-          if (id == null || offer == null && used_offers.containsKey(MesosCommon.taskId(slot.getNodeId(), slot.getPort()))) {
-            offer = used_offers.get(MesosCommon.taskId(slot.getNodeId(), slot.getPort()));
+
+          TaskID taskId = TaskID.newBuilder()
+              .setValue(MesosCommon.taskId(slot.getNodeId(), slot.getPort()))
+              .build();
+
+          if (id == null || offer == null && used_offers.containsKey(taskId)) {
+            offer = used_offers.get(taskId);
             if (offer != null) id = offer.getId();
           }
           if (id != null && offer != null) {
@@ -466,8 +471,7 @@ public class MesosNimbus implements INimbus {
             LOG.info("Launching task with executor data: <" + executorDataStr + ">");
             TaskInfo task = TaskInfo.newBuilder()
                 .setName("worker " + slot.getNodeId() + ":" + slot.getPort())
-                .setTaskId(TaskID.newBuilder()
-                    .setValue(MesosCommon.taskId(slot.getNodeId(), slot.getPort())))
+                .setTaskId(taskId)
                 .setSlaveId(offer.getSlaveId())
                 .setExecutor(ExecutorInfo.newBuilder()
                     .setExecutorId(ExecutorID.newBuilder().setValue(details.getId()))
