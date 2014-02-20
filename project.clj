@@ -6,7 +6,7 @@
   :jvm-opts ["-Djava.library.path=/usr/local/lib:/opt/local/lib:/usr/lib"]
   :repositories {"mesosphere-public-repo" "http://s3.amazonaws.com/mesosphere-maven-public"}
   :dependencies [
-    [org.apache.mesos/mesos "0.14.0"]
+    [org.apache.mesos/mesos "0.16.0"]
     [com.google.protobuf/protobuf-java "2.4.1"]
     [storm-core "0.9.0-rc3"]
     [org.apache.commons/commons-exec "1.1"]

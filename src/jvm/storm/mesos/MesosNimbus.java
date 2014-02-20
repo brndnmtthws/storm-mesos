@@ -297,7 +297,7 @@ public class MesosNimbus implements INimbus {
       final TaskID taskId = TaskID.newBuilder()
         .setValue(MesosCommon.taskId(offer.getHostname(), resources.ports.get(i)))
         .build();
-      used_offers.remove(taskId);
+      used_offers.remove(MesosCommon.taskId(offer.getHostname(), resources.ports.get(i)));
       ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(i)));
     }
     return ret;
@@ -341,8 +341,6 @@ public class MesosNimbus implements INimbus {
       }
     }
 
-    // need access to how many slots are currently used to limit number of slots taken up
-
     List<WorkerSlot> allSlots = new ArrayList<WorkerSlot>();
 
     if (cpu != null && mem != null) {
@@ -353,25 +351,13 @@ public class MesosNimbus implements INimbus {
       }
     }
 
-
     LOG.info("Number of available slots: " + allSlots.size());
     return allSlots;
   }
 
   private OfferID findOffer(WorkerSlot worker) {
     int port = worker.getPort();
-    ArrayList<Offer> offers = new ArrayList<Offer>(_offers.values());
-    Collections.sort(offers, new Comparator<Offer>() {
-      public int compare(Offer lhs, Offer rhs) {
-        if (lhs.getSlaveLoadHint() > rhs.getSlaveLoadHint()) {
-          return 1;
-        } else if (lhs.getSlaveLoadHint() < rhs.getSlaveLoadHint()) {
-          return -1;
-        }
-        return 0;
-      }
-    });
-    for (Offer offer : offers) {
+    for (Offer offer : _offers.values()) {
       if (offer.getHostname().equals(worker.getNodeId())) {
         for (Resource r : offer.getResourcesList()) {
           if (r.getName().equals("ports")) {
@@ -394,16 +380,13 @@ public class MesosNimbus implements INimbus {
       Map<OfferID, List<TaskInfo>> toLaunch = new HashMap();
       for (String topologyId : slots.keySet()) {
         for (WorkerSlot slot : slots.get(topologyId)) {
-          OfferID id = null;
-          Offer offer = null;
-          if (used_offers.containsKey(MesosCommon.taskId(slot.getNodeId(), slot.getPort()))) {
+          OfferID id = findOffer(slot);
+          Offer offer = _offers.get(id);
+          if (id == null || offer == null && used_offers.containsKey(MesosCommon.taskId(slot.getNodeId(), slot.getPort()))) {
             offer = used_offers.get(MesosCommon.taskId(slot.getNodeId(), slot.getPort()));
             id = offer.getId();
-          } else {
-            id = findOffer(slot);
-            offer = _offers.get(id);
           }
-          if (id != null) {
+          if (id != null && offer != null) {
             if (!toLaunch.containsKey(id)) {
               toLaunch.put(id, new ArrayList());
             }
