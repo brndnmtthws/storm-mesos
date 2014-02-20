@@ -384,7 +384,7 @@ public class MesosNimbus implements INimbus {
           Offer offer = _offers.get(id);
           if (id == null || offer == null && used_offers.containsKey(MesosCommon.taskId(slot.getNodeId(), slot.getPort()))) {
             offer = used_offers.get(MesosCommon.taskId(slot.getNodeId(), slot.getPort()));
-            id = offer.getId();
+            if (offer != null) id = offer.getId();
           }
           if (id != null && offer != null) {
             if (!toLaunch.containsKey(id)) {
