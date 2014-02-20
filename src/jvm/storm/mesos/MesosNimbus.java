@@ -19,7 +19,7 @@ import org.json.simple.JSONValue;
 
 import java.io.IOException;
 import java.util.*;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.*;
 
 public class MesosNimbus implements INimbus {
   public static final String CONF_EXECUTOR_URI = "mesos.executor.uri";
@@ -36,11 +36,9 @@ public class MesosNimbus implements INimbus {
   private static final String FRAMEWORK_ID = "FRAMEWORK_ID";
   private final Object OFFERS_LOCK = new Object();
   private RotatingMap<OfferID, Offer> _offers;
-
   private Map<TaskID, Offer> used_offers;
-
-  private Map<ExecutorID, List<TaskID>> executors = Collections.synchronizedMap(new HashMap<ExecutorID, List<TaskID>>());
-
+  private ScheduledExecutorService timerScheduler =
+    Executors.newScheduledThreadPool(1);
 
   LocalState _state;
   NimbusScheduler _scheduler;
@@ -74,16 +72,16 @@ public class MesosNimbus implements INimbus {
         LOG.error("Halting process...", e);
         Runtime.getRuntime().halt(1);
       }
-      _offers = new storm.mesos.RotatingMap<OfferID, Offer>(new
-                                                    storm.mesos.RotatingMap.ExpiredCallback<OfferID, Offer>() {
-                                                      @Override
-                                                      public void expire(OfferID key, Offer val) {
-                                                        driver.declineOffer(val.getId());
-                                                      }
-                                                    });
+      _offers = new storm.mesos.RotatingMap<OfferID, Offer>(
+          new storm.mesos.RotatingMap.ExpiredCallback<OfferID, Offer>() {
+        @Override
+        public void expire(OfferID key, Offer val) {
+            driver.declineOffer(val.getId());
+        }
+      });
 
       Number lruCacheSize = (Number) _conf.get(CONF_MESOS_OFFER_LRU_CACHE_SIZE);
-      if (lruCacheSize == null) lruCacheSize = 10_000;
+      if (lruCacheSize == null) lruCacheSize = 1000;
       final int LRU_CACHE_SIZE = lruCacheSize.intValue();
       used_offers = Collections.synchronizedMap(new LinkedHashMap<TaskID, Offer>(LRU_CACHE_SIZE + 1, .75F, true) {
         // This method is called just after a new entry has been added
@@ -142,6 +140,21 @@ public class MesosNimbus implements INimbus {
     @Override
     public void statusUpdate(SchedulerDriver driver, TaskStatus status) {
       LOG.info("Received status update: " + status.toString());
+      switch (status.getState()) {
+        case TASK_FINISHED:
+        case TASK_FAILED:
+        case TASK_KILLED:
+        case TASK_LOST:
+          final TaskID taskId = status.getTaskId();
+          timerScheduler.schedule(new Runnable() {
+            @Override
+            public void run() {
+              used_offers.remove(taskId);
+          }}, MesosCommon.getSuicideTimeout(_conf), TimeUnit.SECONDS);
+          break;
+        default:
+          break;
+      }
     }
 
     @Override
@@ -162,9 +175,6 @@ public class MesosNimbus implements INimbus {
     @Override
     public void executorLost(SchedulerDriver driver, ExecutorID executor, SlaveID slave, int status) {
       LOG.info("Executor lost: executor=" + executor + " slave=" + slave);
-      if (executors.containsKey(executor)) {
-        used_offers.keySet().removeAll(executors.get(executor));
-      }
     }
   }
 
@@ -477,7 +487,6 @@ public class MesosNimbus implements INimbus {
           used_offers.put(task.getTaskId(), _offers.get(id));
           taskIds.add(task.getTaskId());
         }
-        executors.put(tasks.get(0).getExecutor().getExecutorId(), taskIds);
         _offers.remove(id);
       }
     }
