@@ -391,6 +391,7 @@ public class MesosNimbus implements INimbus {
         for (WorkerSlot slot : slots.get(topologyId)) {
           OfferID id = findOffer(slot);
           Offer offer = _offers.get(id);
+          Boolean usingExistingOffer = false;
 
           TaskID taskId = TaskID.newBuilder()
               .setValue(MesosCommon.taskId(slot.getNodeId(), slot.getPort()))
@@ -398,7 +399,10 @@ public class MesosNimbus implements INimbus {
 
           if (id == null || offer == null && used_offers.containsKey(taskId)) {
             offer = used_offers.get(taskId);
-            if (offer != null) id = offer.getId();
+            if (offer != null) {
+              id = offer.getId();
+              usingExistingOffer = true;
+            }
           }
           if (id != null && offer != null) {
             if (!toLaunch.containsKey(id)) {
@@ -499,7 +503,12 @@ public class MesosNimbus implements INimbus {
                             .setEnd(slot.getPort())))
                     .setRole(portsRole))
                 .build();
+
             toLaunch.get(id).add(new LaunchTask(task, newOffer));
+
+            if (usingExistingOffer.equals(true)) {
+              _driver.killTask(taskId);
+            }
           }
         }
       }
