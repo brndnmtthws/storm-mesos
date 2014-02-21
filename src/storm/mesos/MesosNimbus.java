@@ -294,10 +294,6 @@ public class MesosNimbus implements INimbus {
     int availableSlots = Math.min(resources.cpuSlots, resources.memSlots);
     availableSlots = Math.min(availableSlots, resources.ports.size());
     for (int i = 0; i < availableSlots; i++) {
-      final TaskID taskId = TaskID.newBuilder()
-        .setValue(MesosCommon.taskId(offer.getHostname(), resources.ports.get(i)))
-        .build();
-      used_offers.remove(taskId);
       ret.add(new WorkerSlot(offer.getHostname(), resources.ports.get(i)));
     }
     return ret;
@@ -386,7 +382,7 @@ public class MesosNimbus implements INimbus {
   @Override
   public void assignSlots(Topologies topologies, Map<String, Collection<WorkerSlot>> slots) {
     synchronized (OFFERS_LOCK) {
-      Map<OfferID, List<LaunchTask>> toLaunch = new HashMap();
+      Map<OfferID, List<LaunchTask>> toLaunch = new HashMap<>();
       for (String topologyId : slots.keySet()) {
         for (WorkerSlot slot : slots.get(topologyId)) {
           OfferID id = findOffer(slot);
@@ -416,56 +412,74 @@ public class MesosNimbus implements INimbus {
             executorData.put(MesosCommon.SUPERVISOR_ID, slot.getNodeId() + "-" + details.getId());
             executorData.put(MesosCommon.ASSIGNMENT_ID, slot.getNodeId());
 
-            // Determine roles for cpu, mem, ports
             String cpuRole = null;
             String memRole = null;
             String portsRole = null;
 
-            // Subtract these used resources from our offer and store it in the used_offers map.
-            Offer.Builder builder = Offer.newBuilder();
-            builder.mergeFrom(offer);
-            builder.clearResources();
+            Offer.Builder newBuilder = Offer.newBuilder();
+            newBuilder.mergeFrom(offer);
+            newBuilder.clearResources();
+
+            Offer.Builder existingBuilder = Offer.newBuilder();
+            existingBuilder.mergeFrom(offer);
+            existingBuilder.clearResources();
 
             List<Resource> resourceList = new ArrayList<>();
+            List<Resource> oldResourceList = new ArrayList<>();
             for (Resource r : offer.getResourcesList()) {
-              if (r.getName().equals("cpus") && r.getScalar().getValue() >= cpu && cpuRole == null) {
+              Resource.Builder remnants = Resource.newBuilder();
+              remnants.mergeFrom(r);
+              Resource.Builder resource = Resource.newBuilder();
+              resource.mergeFrom(r);
+
+              if (r.getName().equals("cpus") && r.getScalar().getValue() >= cpu) {
                 cpuRole = r.getRole();
-                Resource.Builder resource = Resource.newBuilder();
-                resource.mergeFrom(r);
                 resource.setScalar(
                     Scalar.newBuilder()
                         .setValue(cpu));
                 resourceList.add(resource.build());
-              } else if (r.getName().equals("mem") && r.getScalar().getValue() >= mem && memRole == null) {
+                remnants.setScalar(
+                    Scalar.newBuilder()
+                        .setValue(r.getScalar().getValue() - cpu));
+              } else if (r.getName().equals("mem") && r.getScalar().getValue() >= mem) {
                 memRole = r.getRole();
-                Resource.Builder resource = Resource.newBuilder();
-                resource.mergeFrom(r);
                 resource.setScalar(
                     Scalar.newBuilder()
                         .setValue(mem));
                 resourceList.add(resource.build());
-              } else if (r.getName().equals("ports") && portsRole == null) {
+                remnants.setScalar(
+                    Scalar.newBuilder()
+                        .setValue(r.getScalar().getValue() - mem));
+              } else if (r.getName().equals("ports")) {
+                Ranges.Builder rb = Ranges.newBuilder();
                 for (Range range : r.getRanges().getRangeList()) {
-                  Range.Builder rb = Range.newBuilder().mergeFrom(range);
                   if (slot.getPort() >= range.getBegin() && slot.getPort() <= range.getEnd()) {
                     portsRole = r.getRole();
-                    Resource.Builder resource = Resource.newBuilder();
-                    resource.mergeFrom(r);
                     resource.setRanges(
-                        Ranges.newBuilder()
-                            .addRange(
-                                Range.newBuilder()
-                                    .setBegin(slot.getPort())
-                                    .setEnd(slot.getPort())
-                            ));
+                      Ranges.newBuilder()
+                        .addRange(
+                            Range.newBuilder()
+                                .setBegin(slot.getPort())
+                                .setEnd(slot.getPort())
+                        ));
                     resourceList.add(resource.build());
+                    rb.addRange(Range.newBuilder()
+                      .setBegin(slot.getPort() + 1)
+                      .setEnd(range.getEnd()));
                     break;
+                  } else {
+                    rb.addRange(range);
                   }
                 }
               }
+              oldResourceList.add(remnants.build());
             }
-            builder.addAllResources(resourceList);
-            Offer newOffer = builder.build();
+            newBuilder.addAllResources(resourceList);
+            Offer newOffer = newBuilder.build();
+            Offer remainingOffer = existingBuilder.addAllResources(oldResourceList).build();
+
+            // Update the remaining offer list
+            _offers.put(id, remainingOffer);
 
             if (cpuRole == null) cpuRole = "*";
             if (memRole == null) memRole = "*";
@@ -506,7 +520,7 @@ public class MesosNimbus implements INimbus {
 
             toLaunch.get(id).add(new LaunchTask(task, newOffer));
 
-            if (usingExistingOffer.equals(true)) {
+            if (usingExistingOffer) {
               _driver.killTask(taskId);
             }
           }
