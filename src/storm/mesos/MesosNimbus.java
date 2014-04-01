@@ -38,7 +38,7 @@ public class MesosNimbus implements INimbus {
   private RotatingMap<OfferID, Offer> _offers;
   private Map<TaskID, Offer> used_offers;
   private ScheduledExecutorService timerScheduler =
-    Executors.newScheduledThreadPool(1);
+      Executors.newScheduledThreadPool(1);
 
   LocalState _state;
   NimbusScheduler _scheduler;
@@ -74,11 +74,12 @@ public class MesosNimbus implements INimbus {
       }
       _offers = new RotatingMap<OfferID, Offer>(
           new RotatingMap.ExpiredCallback<OfferID, Offer>() {
-        @Override
-        public void expire(OfferID key, Offer val) {
-            driver.declineOffer(val.getId());
-        }
-      });
+            @Override
+            public void expire(OfferID key, Offer val) {
+              driver.declineOffer(val.getId());
+            }
+          }
+      );
 
       Number lruCacheSize = (Number) _conf.get(CONF_MESOS_OFFER_LRU_CACHE_SIZE);
       if (lruCacheSize == null) lruCacheSize = 1000;
@@ -150,7 +151,8 @@ public class MesosNimbus implements INimbus {
             @Override
             public void run() {
               used_offers.remove(taskId);
-          }}, MesosCommon.getSuicideTimeout(_conf), TimeUnit.SECONDS);
+            }
+          }, MesosCommon.getSuicideTimeout(_conf), TimeUnit.SECONDS);
           break;
         default:
           break;
@@ -229,7 +231,7 @@ public class MesosNimbus implements INimbus {
       LOG.info("Waiting for scheduler to initialize...");
       initter.acquire();
       LOG.info("Scheduler initialized...");
-    } catch (IOException|InterruptedException e) {
+    } catch (IOException | InterruptedException e) {
       throw new RuntimeException(e);
     }
   }
@@ -303,8 +305,8 @@ public class MesosNimbus implements INimbus {
   public boolean isHostAccepted(String hostname) {
     return
         (_allowedHosts == null && _disallowedHosts == null) ||
-        (_allowedHosts != null && _allowedHosts.contains(hostname)) ||
-        (_disallowedHosts != null && !_disallowedHosts.contains(hostname))
+            (_allowedHosts != null && _allowedHosts.contains(hostname)) ||
+            (_disallowedHosts != null && !_disallowedHosts.contains(hostname))
         ;
   }
 
@@ -375,8 +377,32 @@ public class MesosNimbus implements INimbus {
       this.task = task;
       this.offer = offer;
     }
+
     public final TaskInfo task;
     public final Offer offer;
+  }
+
+  private Resource getResourceScalar(final List<Resource> offerResources,
+                                         final double value,
+                                         final String name) {
+    for (Resource r : offerResources) {
+      if (r.getType() == Type.SCALAR &&
+          r.getName().equals(name) &&
+          r.getScalar().getValue() >= value) {
+        return r;
+      }
+    }
+    return null;
+  }
+  private Resource getResourceRange(final List<Resource> offerResources,
+                                    final long valueBegin, final long valueEnd,
+                                    final String name) {
+    for (Resource r : offerResources) {
+      if (r.getType() == Type.RANGES && r.getName().equals(name)) {
+        return r;
+      }
+    }
+    return null;
   }
 
   @Override
@@ -424,6 +450,28 @@ public class MesosNimbus implements INimbus {
             existingBuilder.mergeFrom(offer);
             existingBuilder.clearResources();
 
+
+            List<Resource> offerResources = offer.getResourcesList();
+            List<Resource> reservedOfferResources = new ArrayList<>();
+            for (Resource r : offerResources) {
+              if (r.hasRole() && !r.getRole().equals("*")) {
+                reservedOfferResources.add(r);
+              }
+            }
+
+            Resource cpuResource = getResourceScalar(reservedOfferResources, cpu, "cpus");
+            if (cpuResource == null) {
+              cpuResource = getResourceScalar(offerResources, cpu, "cpus");
+            }
+            Resource memResource = getResourceScalar(reservedOfferResources, mem, "mem");
+            if (memResource == null) {
+              memResource = getResourceScalar(offerResources, mem, "mem");
+            }
+            Resource portsResource = getResourceRange(reservedOfferResources, slot.getPort(), slot.getPort(), "ports");
+            if (portsResource == null) {
+              portsResource = getResourceRange(offerResources, slot.getPort(), slot.getPort(), "ports");
+            }
+
             List<Resource> resourceList = new ArrayList<>();
             List<Resource> oldResourceList = new ArrayList<>();
             for (Resource r : offer.getResourcesList()) {
@@ -432,7 +480,7 @@ public class MesosNimbus implements INimbus {
               Resource.Builder resource = Resource.newBuilder();
               resource.mergeFrom(r);
 
-              if (r.getName().equals("cpus") && r.getScalar().getValue() >= cpu) {
+              if (r == cpuResource) {
                 cpuRole = r.getRole();
                 resource.setScalar(
                     Scalar.newBuilder()
@@ -441,7 +489,7 @@ public class MesosNimbus implements INimbus {
                 remnants.setScalar(
                     Scalar.newBuilder()
                         .setValue(r.getScalar().getValue() - cpu));
-              } else if (r.getName().equals("mem") && r.getScalar().getValue() >= mem) {
+              } else if (r == memResource) {
                 memRole = r.getRole();
                 resource.setScalar(
                     Scalar.newBuilder()
@@ -450,22 +498,22 @@ public class MesosNimbus implements INimbus {
                 remnants.setScalar(
                     Scalar.newBuilder()
                         .setValue(r.getScalar().getValue() - mem));
-              } else if (r.getName().equals("ports")) {
+              } else if (r == portsResource) {
                 Ranges.Builder rb = Ranges.newBuilder();
                 for (Range range : r.getRanges().getRangeList()) {
                   if (slot.getPort() >= range.getBegin() && slot.getPort() <= range.getEnd()) {
                     portsRole = r.getRole();
                     resource.setRanges(
-                      Ranges.newBuilder()
-                        .addRange(
-                            Range.newBuilder()
-                                .setBegin(slot.getPort())
-                                .setEnd(slot.getPort())
-                        ));
+                        Ranges.newBuilder()
+                            .addRange(
+                                Range.newBuilder()
+                                    .setBegin(slot.getPort())
+                                    .setEnd(slot.getPort())
+                            ));
                     resourceList.add(resource.build());
                     rb.addRange(Range.newBuilder()
-                      .setBegin(slot.getPort() + 1)
-                      .setEnd(range.getEnd()));
+                        .setBegin(slot.getPort() + 1)
+                        .setEnd(range.getEnd()));
                     break;
                   } else {
                     rb.addRange(range);
